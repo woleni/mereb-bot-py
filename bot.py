@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from bson import ObjectId
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -94,6 +94,15 @@ def menu_keyboard():
     return InlineKeyboardMarkup(buttons)
 
 
+# Persistent bottom bar — stays visible below the text box at all times,
+# so the customer never has to type /start again to get the menu back.
+BOTTOM_BAR = ReplyKeyboardMarkup(
+    [[KeyboardButton("📋 Menu"), KeyboardButton("🛒 Cart")]],
+    resize_keyboard=True,
+    is_persistent=True,
+)
+
+
 def cart_keyboard(cart):
     buttons = [
         [InlineKeyboardButton(f'{item["name"]} x{item["qty"]} — {item["price"] * item["qty"]} ETB', callback_data="noop")]
@@ -145,7 +154,11 @@ def owner_status_keyboard(order_id):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["awaiting_address"] = False
     await update.message.reply_text(
-        "☕ Welcome to Mereb Coffee House!\n\nTap an item to add it to your order:",
+        "☕ Welcome to Mereb Coffee House!",
+        reply_markup=BOTTOM_BAR,
+    )
+    await update.message.reply_text(
+        "Tap an item to add it to your order:",
         reply_markup=menu_keyboard(),
     )
 
@@ -291,11 +304,29 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================================
 
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+
+    # Persistent bottom bar buttons
+    if text == "📋 Menu":
+        await update.message.reply_text(
+            "☕ Mereb Coffee House Menu\n\nTap an item to add it:", reply_markup=menu_keyboard()
+        )
+        return
+
+    if text == "🛒 Cart":
+        cart = get_cart(update.effective_chat.id)
+        if not cart:
+            await update.message.reply_text("Your cart is empty. Add something from the menu:", reply_markup=menu_keyboard())
+            return
+        total = cart_total(cart)
+        await update.message.reply_text(f"🛒 Your Cart\n\nTotal: {total} ETB", reply_markup=cart_keyboard(cart))
+        return
+
     if not context.user_data.get("awaiting_address"):
         return  # ignore random text outside the checkout flow
 
     context.user_data["awaiting_address"] = False
-    address = update.message.text.strip()
+    address = text
     chat_id = update.effective_chat.id
 
     confirm_text = await finalize_order(context, chat_id, update.effective_user, "delivery", address=address)
