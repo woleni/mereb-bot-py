@@ -49,6 +49,7 @@ MENU = [
 MENU_BY_ID = {item["id"]: item for item in MENU}
 
 STATUS_LABELS = {
+    "payment_submitted": "🧾 Payment Submitted",
     "preparing": "👨‍🍳 Preparing",
     "ready": "✅ Ready",
     "completed": "📦 Completed",
@@ -187,23 +188,16 @@ async def finalize_order(context, chat_id, user, fulfillment, address=None):
         "status": "new",
     }
     result = orders_col.insert_one(order)
-    order["_id"] = result.inserted_id
     order_id = str(result.inserted_id)
 
     order_lines = "\n".join(f'• {i["name"]} x{i["qty"]} — {i["price"] * i["qty"]} ETB' for i in cart)
     confirm_text = (
-        f"✅ Order confirmed!\n\n{order_lines}\n\nTotal: {total} ETB\n"
+        f"✅ Order recorded!\n\n{order_lines}\n\nTotal: {total} ETB\n"
         f'{"📍 Delivering to: " + address if fulfillment == "delivery" else "🏪 Ready for pickup"}\n\n'
-        "We'll message you here as your order progresses."
+        "📸 Please send a screenshot of your payment slip to confirm this order."
     )
 
-    if OWNER_CHAT_ID:
-        await context.bot.send_message(
-            chat_id=OWNER_CHAT_ID,
-            text=owner_order_text(order),
-            reply_markup=owner_status_keyboard(order_id),
-        )
-
+    context.user_data["awaiting_payment_order_id"] = order_id
     clear_cart(chat_id)
     return confirm_text
 
@@ -303,6 +297,41 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # TEXT MESSAGES — only used to capture a delivery address
 # ============================================================
 
+# ============================================================
+# PHOTOS — used to capture the payment screenshot
+# ============================================================
+
+async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    order_id = context.user_data.get("awaiting_payment_order_id")
+    if not order_id:
+        return  # not currently expecting a payment screenshot, ignore
+
+    order = orders_col.find_one({"_id": ObjectId(order_id)})
+    if not order:
+        await update.message.reply_text("Sorry, we couldn't find that order. Please try /start again.")
+        context.user_data["awaiting_payment_order_id"] = None
+        return
+
+    orders_col.update_one({"_id": ObjectId(order_id)}, {"$set": {"status": "payment_submitted"}})
+    order["status"] = "payment_submitted"
+
+    photo_file_id = update.message.photo[-1].file_id  # largest available size
+
+    if OWNER_CHAT_ID:
+        await context.bot.send_photo(
+            chat_id=OWNER_CHAT_ID,
+            photo=photo_file_id,
+            caption=owner_order_text(order),
+            reply_markup=owner_status_keyboard(order_id),
+        )
+
+    context.user_data["awaiting_payment_order_id"] = None
+    await update.message.reply_text(
+        "📸 Payment screenshot received! Your order is being reviewed — we'll message you here as it progresses.",
+        reply_markup=BOTTOM_BAR,
+    )
+
+
 async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
 
@@ -338,6 +367,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("myid", myid))
     app.add_handler(CallbackQueryHandler(on_button))
+    app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text))
     print("Bot is running...")
     app.run_polling()
