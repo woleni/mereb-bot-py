@@ -274,22 +274,35 @@ async def on_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if data.startswith("status_"):
-        parts = data.split("_")
-        status_code = parts[1]
-        order_id = parts[2]
-        order = orders_col.find_one({"_id": ObjectId(order_id)})
-        if not order:
-            await query.answer("Order not found")
-            return
-        orders_col.update_one({"_id": ObjectId(order_id)}, {"$set": {"status": status_code}})
-        order["status"] = status_code
+        try:
+            remainder = data[len("status_"):]  # e.g. "preparing_507f1f77bcf86cd799439011"
+            status_code, order_id = remainder.rsplit("_", 1)
 
-        await query.answer(f"Marked as {STATUS_LABELS[status_code]}")
-        await query.edit_message_text(owner_order_text(order), reply_markup=owner_status_keyboard(order_id))
+            order = orders_col.find_one({"_id": ObjectId(order_id)})
+            if not order:
+                await query.answer("⚠️ Order not found in database")
+                return
 
-        customer_msg = STATUS_CUSTOMER_MESSAGE.get(status_code)
-        if customer_msg:
-            await context.bot.send_message(chat_id=order["chat_id"], text=customer_msg)
+            orders_col.update_one({"_id": ObjectId(order_id)}, {"$set": {"status": status_code}})
+            order["status"] = status_code
+
+            await query.answer(f"Marked as {STATUS_LABELS.get(status_code, status_code)}")
+
+            # The status buttons can be attached to either a text message
+            # (old flow) or a photo message (payment screenshot flow) —
+            # edit the right part depending on which one this is.
+            if query.message.photo:
+                await query.edit_message_caption(caption=owner_order_text(order), reply_markup=owner_status_keyboard(order_id))
+            else:
+                await query.edit_message_text(owner_order_text(order), reply_markup=owner_status_keyboard(order_id))
+
+            customer_msg = STATUS_CUSTOMER_MESSAGE.get(status_code)
+            if customer_msg:
+                await context.bot.send_message(chat_id=order["chat_id"], text=customer_msg)
+
+        except Exception as e:
+            logging.exception("Failed to process status button")
+            await query.answer(f"⚠️ Error: {e}", show_alert=True)
         return
 
 
